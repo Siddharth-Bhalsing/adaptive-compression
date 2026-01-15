@@ -17,14 +17,31 @@ def shannon_entropy(data):
         entropy -= p_x * math.log2(p_x)
     return entropy
 
+from PIL import Image
+
 def sample_features(file_path, sample_kb=64):
     """
-    Analyzes a file using statistical heuristics to predict the best compression strategy.
+    Analyzes a file using statistical and VISUAL heuristics.
     """
     if not os.path.exists(file_path) or os.path.isdir(file_path):
         return None
         
     size = os.path.getsize(file_path)
+    ext = file_path.lower().split('.')[-1]
+    
+    # --- VISUAL INTELLIGENCE ---
+    img_type = None
+    img_dims = None
+    is_video = ext in ['mp4', 'mkv', 'avi', 'mov', 'flv', 'wmv']
+    
+    if ext in ['jpg', 'jpeg', 'png', 'bmp', 'tiff', 'webp']:
+        try:
+            with Image.open(file_path) as img:
+                img_type = img.format
+                img_dims = img.size # (width, height)
+        except:
+            pass
+
     # If the file is smaller than our sample size, just read the whole thing
     read_size = min(size, sample_kb * 1024)
     
@@ -41,16 +58,10 @@ def sample_features(file_path, sample_kb=64):
     entropy = shannon_entropy(sample)
     
     # 2. Structural Repetition (4-byte sliding window)
-    # This detects patterns like recurring headers in CSVs or logs
     chunks = [sample[i:i+4] for i in range(0, len(sample) - 3, 4)]
-    if chunks:
-        unique_chunks = len(set(chunks))
-        repetition_ratio = 1.0 - (unique_chunks / len(chunks))
-    else:
-        repetition_ratio = 0
+    repetition_ratio = 1.0 - (len(set(chunks)) / len(chunks)) if chunks else 0
     
     # 3. Robust Text vs Binary detection
-    # Checks for printable characters (ASCII) vs Null bytes/Control codes
     null_count = sample.count(0)
     text_chars = sum(1 for c in sample if 32 <= c <= 126 or c in (9,10,13))
     text_ratio = text_chars / len(sample)
@@ -69,5 +80,11 @@ def sample_features(file_path, sample_kb=64):
         'is_text': is_text,
         'repetition': round(repetition_ratio, 4),
         'compressible': is_compressible,
-        'magic': sample[:8].hex().upper()
+        'magic': sample[:8].hex().upper(),
+        'visual': {
+            'is_image': img_type is not None,
+            'is_video': is_video,
+            'format': img_type,
+            'dimensions': img_dims
+        }
     }

@@ -1,38 +1,44 @@
-import json
-import struct
+import sqlite3
+import os
+import time
 
-def write_container(header: dict, compressed_bytes: bytes, out_path, crypto_data=None):
-    """
-    header: Dictionary containing tool info, etc.
-    crypto_data: Optional dict with {'nonce': bytes, 'tag': bytes}
-    """
-    # If we have encryption data, add it to the header
-    if crypto_data:
-        header['encryption'] = {
-            'nonce': crypto_data['nonce'].hex(),
-            'tag': crypto_data['tag'].hex()
-        }
-    
-    header_json = json.dumps(header).encode('utf-8')
-    
-    with open(out_path, 'wb') as f:
-        # 4-byte big-endian length of the header
-        f.write(struct.pack('>I', len(header_json)))
-        f.write(header_json)
-        f.write(compressed_bytes)
+class CompressionDB:
+    def __init__(self, db_path="data/project_history.db"):
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.db_path = db_path
+        self._init_db()
 
-def read_container(path):
-    with open(path, 'rb') as f:
-        # Read the 4-byte header length
-        raw_len = f.read(4)
-        if not raw_len:
-            return None, None
-            
-        header_len = struct.unpack('>I', raw_len)[0]
-        header_bytes = f.read(header_len)
-        header = json.loads(header_bytes.decode('utf-8'))
-        
-        # Everything else is the encrypted/compressed payload
-        payload = f.read()
-        
-    return header, payload
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    filename TEXT,
+                    original_size INTEGER,
+                    compressed_size INTEGER,
+                    entropy REAL,
+                    engine TEXT,
+                    duration REAL,
+                    ratio REAL,
+                    eco_mode INTEGER
+                )
+            """)
+
+    def log_run(self, filename, orig_size, comp_size, entropy, engine, duration, eco_mode):
+        ratio = (comp_size / orig_size) if orig_size > 0 else 1.0
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO history (filename, original_size, compressed_size, entropy, engine, duration, ratio, eco_mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (filename, orig_size, comp_size, entropy, engine, duration, ratio, 1 if eco_mode else 0))
+
+    def get_stats(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT COUNT(*), AVG(ratio), AVG(duration) FROM history")
+            return cursor.fetchone()
+
+    def get_recent_runs(self, limit=10):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT engine, ratio, duration FROM history ORDER BY timestamp DESC LIMIT ?", (limit,))
+            return cursor.fetchall()

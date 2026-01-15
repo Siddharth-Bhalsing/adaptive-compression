@@ -2,20 +2,19 @@ import subprocess
 import time
 import os
 
-def verify_integrity(tool_cmd_base, archive_path):
+def verify_integrity(binary_path, archive_path):
     """
-    Checks if an ARCHIVE is valid.
+    Checks if an ARCHIVE is valid using list-based execution.
     """
     if not os.path.exists(archive_path):
         return (False, "File missing.")
         
-    # Only test files that look like archives
     ext = os.path.splitext(archive_path)[1].lower()
     if ext not in ['.7z', '.adapt', '.zpaq', '.paq', '.zst']:
-        return (True, "Skip: Not an archive format.")
+        return (True, "Skip: Not an archive.")
 
-    test_flag = "t" if "7za" in tool_cmd_base.lower() or "zpaq" in tool_cmd_base.lower() else "-t"
-    test_cmd = f'"{tool_cmd_base}" {test_flag} "{archive_path}"'
+    test_flag = "t" if ("7za" in binary_path.lower() or "zpaq" in binary_path.lower()) else "-t"
+    test_cmd = [binary_path, test_flag, archive_path]
     
     try:
         result = subprocess.run(
@@ -23,80 +22,90 @@ def verify_integrity(tool_cmd_base, archive_path):
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE, 
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=30,
-            cwd=os.path.dirname(tool_cmd_base),
-            shell=True,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
-        return (result.returncode == 0, result.stderr.strip() or result.stdout.strip())
-    except:
-        return (False, "Integrity check crashed.")
+        return (result.returncode == 0, (result.stderr or result.stdout or "").strip())
+    except Exception as e:
+        return (False, f"Integrity Crash: {str(e)}")
 
-def run_compressor(cmd, input_path, output_path, timeout=60):
+def run_compressor(cmd, input_path, output_path, timeout=120):
     """
-    FINAL ROBUST VERSION:
-    1. Trusts Engine Exit Code 0.
-    2. Discovers output if 7-zip changes the filename.
-    3. Only verifies integrity on COMPRESSION tasks.
+    Standardizes command execution and improves diagnostics.
     """
     start_time = time.time()
     
-    # 1. Shell-safe String Reconstruction
     if isinstance(cmd, list):
         binary_path = cmd[0]
-        cmd_str = ' '.join([f'"{arg}"' if (not arg.startswith('-') or os.path.isabs(arg)) else arg for arg in cmd])
+        cmd_for_log = ' '.join([f'"{arg}"' if ' ' in arg else str(arg) for arg in cmd])
     else:
-        cmd_str = cmd
         binary_path = cmd.split()[0].replace('"', '')
+        cmd_for_log = cmd
 
     try:
         out_dir = os.path.dirname(os.path.abspath(output_path))
         os.makedirs(out_dir, exist_ok=True)
 
-        # 2. Execution
+        # 0. PERMISSION CHECK: Verify if we can actually write here
+        test_file = os.path.join(out_dir, f".perm_test_{int(time.time())}")
+        try:
+            with open(test_file, "w") as f: f.write("test")
+            os.remove(test_file)
+        except (PermissionError, OSError):
+            return {"success": False, "error": "Access Denied: Windows Security (Controlled Folder Access) is blocking this folder. Please allow python.exe in Ransomware Protection settings."}
+
+        # 1. PRE-CHECK: Allocation Safety
+        if os.path.exists(output_path):
+            try:
+                import stat
+                if os.path.isdir(output_path):
+                    import shutil
+                    shutil.rmtree(output_path, ignore_errors=True)
+                else:
+                    os.chmod(output_path, stat.S_IWRITE)
+                    os.remove(output_path)
+            except: pass
+
+        # 2. Execution (Always prefer list-based for safety)
         process = subprocess.run(
-            cmd_str, 
+            cmd, 
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE, 
             text=True, 
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout,
-            cwd=os.path.dirname(binary_path), 
-            shell=True,
+            shell=False,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
         
-        # 3. Trust the Engine Exit Code
+        # 3. Success Logic
         if process.returncode == 0:
-            time.sleep(0.6) # Critical: Let Windows finish the disk IO
-            
-            # DISCOVERY: Find the file actually created
-            actual_file = output_path
-            if not os.path.exists(output_path):
-                files = [os.path.join(out_dir, f) for f in os.listdir(out_dir)]
-                if files:
-                    # Pick the file modified in the last 2 seconds
-                    actual_file = max(files, key=os.path.getmtime)
-
-            # 4. Context-Aware Validation
-            # ONLY run 'test' if we were ADDING (compressing) to an archive
-            if " a " in cmd_str or " add " in cmd_str:
-                success, msg = verify_integrity(binary_path, actual_file)
+            time.sleep(0.5) # Let Windows finalize IO
+            if os.path.exists(output_path):
+                # Verify
+                success, msg = verify_integrity(binary_path, output_path)
                 if not success:
                     return {"success": False, "error": f"Integrity Fail: {msg}"}
 
-            if os.path.exists(actual_file):
                 return {
                     "success": True,
                     "time": time.time() - start_time,
-                    "output_size": os.path.getsize(actual_file),
-                    "final_path": actual_file
+                    "output_size": os.path.getsize(output_path),
+                    "final_path": output_path
                 }
 
-        # 5. Failure Diagnostics
-        err_log = (process.stderr or "" + process.stdout or "").strip()
-        print(f"\n[DEBUG] Engine Output: {err_log}")
+        # 4. Failure Diagnostics
+        err_out = (process.stderr or "").strip()
+        std_out = (process.stdout or "").strip()
+        full_err = f"{err_out}\n{std_out}".strip()
         
-        return {"success": False, "error": f"Engine Error: {err_log[:100]}" if err_log else "Engine wrote no file."}
+        print(f"\n[DEBUG] Command: {cmd_for_log}")
+        print(f"[DEBUG] Engine Error: {full_err}")
+        
+        return {"success": False, "error": f"Engine Fail: {full_err[:100]}"}
             
     except Exception as e:
-        return {"success": False, "error": f"Runner System Error: {str(e)}"}
+        return {"success": False, "error": f"Runner Error: {str(e)}"}

@@ -1,24 +1,31 @@
 @echo off
 echo ===================================================
-echo   ADAPTIVE ENGINE: 2026 PROFESSIONAL BUILDER
+echo   ADAPTIVE COMPRESSION - PROFESSIONAL BUILD TOOL
 echo ===================================================
 
-:: 1. Check for dependencies
-echo [1/4] Checking Python libraries...
-pip install psutil pyinstaller customtkinter
+echo [1/4] Installing dependencies...
+python -m pip install pyinstaller customtkinter psutil Pillow zstandard lz4
 
-:: 2. Clean old builds to prevent "Ghost Files"
-echo [2/4] Cleaning old workspace...
-if exist build rd /s /q build
-if exist dist rd /s /q dist
+echo [2/4] Cleaning old build data...
+if exist dist rmdir /s /q dist
+if exist build rmdir /s /q build
 
-:: 3. Run PyInstaller
-echo [3/4] Compiling Executable (This may take 1-2 minutes)...
-:: Note: Replace 'app_icon.ico' with your actual icon filename
-python -m PyInstaller --noconsole --onefile --clean --add-data "bin;bin" --icon=app_icon.ico app.py
+echo [3/4] Running PyInstaller...
+:: --onefile: bundle into single exe
+:: --windowed: no console window
+:: --add-data "bin;bin": include engine binaries
+:: --add-data "data;data": include history database
+:: --icon: set app icon
+python -m PyInstaller --noconfirm --onefile --windowed --add-data "bin;bin" --add-data "data;data" --icon "app_icon.ico" app.py
 
-:: 4. Finalizing
-echo [4/4] Build Complete!
-echo.
-echo Your file is ready in the 'dist' folder.
+echo [4/4] Verifying build...
+if exist dist\app.exe (
+    echo.
+    echo SUCCESS! Your professional executable is ready in the 'dist' folder.
+    explorer dist
+) else (
+    echo.
+    echo ERROR: Build failed. Check the logs above.
+)
+
 pause
